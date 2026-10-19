@@ -26,3 +26,4 @@ After you tap **Start listening** once, it never stops until you tap **Stop**. A
 - If a model name errors, edit it in ⚙︎ (Groq's model list changes).
 - Key and resume are stored only in your phone's browser. Audio and text go only to Groq.
 - Please check the interviewer's rules: many employers prohibit AI assistance during interviews.
+
