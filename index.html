@@ -1,0 +1,273 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Copilot</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Copilot">
+<meta name="theme-color" content="#0f1115">
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icon-180.png">
+<style>
+  :root { --bg:#0f1115; --panel:#181b22; --text:#eef0f5; --muted:#8b91a1; --accent:#5b8cff; --green:#3fd0a0; --red:#ff5d6c; --border:#2a2f3a; }
+  * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  html,body { margin:0; height:100%; background:var(--bg); color:var(--text);
+    font:17px/1.45 -apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,sans-serif; }
+  body { display:flex; flex-direction:column; padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); }
+  header { display:flex; align-items:center; gap:10px; padding:10px 14px; border-bottom:1px solid var(--border); }
+  #state { flex:1; font-size:14px; color:var(--muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  #state.live { color:var(--green); } #state.err { color:var(--red); white-space:normal; }
+  .gear { background:none; border:0; color:var(--muted); font-size:24px; padding:2px 6px; }
+  main { flex:1; overflow-y:auto; padding:14px; display:flex; flex-direction:column; gap:12px; -webkit-overflow-scrolling:touch; }
+  .q { font-size:14px; color:var(--muted); }
+  .block { background:var(--panel); border:1px solid var(--border); border-radius:14px; padding:12px 14px; white-space:pre-wrap; word-wrap:break-word; }
+  .block .tag { display:block; font-size:11px; letter-spacing:.07em; text-transform:uppercase; color:var(--muted); margin-bottom:4px; }
+  .block.web { border-color:#2d5a4a; } .block.web .tag { color:var(--green); }
+  .block b { color:var(--green); }
+  .empty { margin:auto; text-align:center; color:var(--muted); max-width:290px; }
+  footer { padding:10px 14px 14px; }
+  #go { width:100%; height:58px; border:0; border-radius:16px; background:var(--accent); color:#fff; font-size:18px; font-weight:600; }
+  #go.on { background:var(--red); }
+  dialog { background:var(--panel); color:var(--text); border:1px solid var(--border); border-radius:16px; width:min(94vw,520px); padding:0; }
+  dialog::backdrop { background:rgba(0,0,0,.6); }
+  .dlg { padding:16px; display:flex; flex-direction:column; gap:10px; max-height:86vh; overflow-y:auto; }
+  .dlg h2 { margin:0; font-size:18px; }
+  label { font-size:13px; color:var(--muted); display:block; margin-bottom:3px; }
+  input, textarea { width:100%; background:var(--bg); border:1px solid var(--border); border-radius:10px; color:var(--text); padding:10px; font:16px -apple-system,system-ui,sans-serif; }
+  textarea { min-height:140px; }
+  .btns { display:flex; gap:10px; justify-content:flex-end; }
+  .btns button { border:0; border-radius:10px; padding:10px 16px; font-size:15px; background:#252a35; color:var(--text); }
+  .btns .p { background:var(--accent); color:#fff; }
+  .hint { font-size:12px; color:var(--muted); }
+</style>
+</head>
+<body>
+<header>
+  <div id="state">Idle</div>
+  <button class="gear" id="gear" aria-label="Settings">⚙︎</button>
+</header>
+<main id="feed">
+  <div class="empty" id="empty">Tap <b>Start listening</b>. When the interviewer finishes a question, the answer appears here.</div>
+</main>
+<footer><button id="go">Start listening</button></footer>
+
+<dialog id="dlg">
+  <div class="dlg">
+    <h2>Setup</h2>
+    <div><label>Groq API key (free: console.groq.com)</label><input type="password" id="key" placeholder="gsk_…" autocomplete="off"></div>
+    <div><label>Role / company</label><input id="role" placeholder="e.g. Data analyst at a bank"></div>
+    <div><label>Your resume (paste text)</label><textarea id="resume"></textarea></div>
+    <div><label>Fast answer model</label><input id="fast" autocapitalize="off" autocorrect="off"></div>
+    <div><label>Web-search model</label><input id="web" autocapitalize="off" autocorrect="off"></div>
+    <div class="hint">Stored only on this phone. If a model name errors, check Groq's model list and edit it here.</div>
+    <div class="btns"><button id="cancel">Cancel</button><button class="p" id="save">Save</button></div>
+  </div>
+</dialog>
+
+<script>
+(() => {
+  'use strict';
+  const D = { key:'', role:'', resume:'', fast:'llama-3.3-70b-versatile', web:'groq/compound' };
+  const BASE = 'https://api.groq.com/openai/v1';
+  const $ = id => document.getElementById(id);
+  let cfg = { ...D, ...(() => { try { return JSON.parse(localStorage.getItem('cp_cfg')) || {}; } catch { return {}; } })() };
+
+  const stateEl = $('state'), feed = $('feed'), goBtn = $('go');
+  const setState = (t, cls = '') => { stateEl.textContent = t; stateEl.className = cls; };
+  const esc = s => s.replace(/[&<>]/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;' }[c]));
+  const fmt = s => esc(s).replace(/\*\*(.+?)\*\*/g, '<b>$1</b>');
+
+  /* ---------- settings ---------- */
+  const dlg = $('dlg'), F = ['key','role','resume','fast','web'];
+  $('gear').onclick = () => { F.forEach(k => $(k).value = cfg[k]); dlg.showModal(); };
+  $('cancel').onclick = () => dlg.close();
+  $('save').onclick = () => { F.forEach(k => { const v = $(k).value.trim(); cfg[k] = (k === 'fast' || k === 'web') ? (v || D[k]) : v; });
+    try { localStorage.setItem('cp_cfg', JSON.stringify(cfg)); } catch {} dlg.close(); };
+  if (!cfg.key) setTimeout(() => $('gear').click(), 300);
+
+  /* ---------- prompts ---------- */
+  const ctx = () => `Candidate: ${cfg.role || 'job candidate'}.\nResume:\n${cfg.resume.slice(0, 6000) || '(none provided)'}`;
+  const FAST_SYS = () => `You feed an interviewee quick talking points to glance at and say aloud.
+${ctx()}
+Rules: answer the interviewer's question in 3-4 short bullets (max ~15 words each), first person, using ONLY facts from the resume for personal experience (never invent employers, numbers or projects). For technical/knowledge questions give the correct answer directly. Bold the key phrase of each bullet with **double asterisks**. No preamble, no closing line. If the input isn't a question, reply "—".`;
+  const WEB_SYS = () => `You help an interviewee give a strong, accurate answer.
+${ctx()}
+Use web search when the question involves facts, current tech/tools/trends, or the company/industry; otherwise answer from the resume. Reply with 3-5 short bullets (max ~20 words each), first person, resume facts only for personal experience, with the best up-to-date points or numbers worth mentioning. Bold key phrases with **double asterisks**. No preamble. If the input isn't a question, reply "—".`;
+
+  /* ---------- API ---------- */
+  async function api(path, init) {
+    const r = await fetch(BASE + path, init);
+    if (!r.ok) {
+      let m = r.status + ''; try { m = (await r.json()).error?.message || m; } catch {}
+      if (r.status === 401) m = 'Invalid Groq key.';
+      if (r.status === 429) m = 'Rate limit — wait a few seconds.';
+      throw new Error(m);
+    }
+    return r;
+  }
+  const hdr = () => ({ 'Content-Type': 'application/json', Authorization: 'Bearer ' + cfg.key });
+
+  async function transcribe(blob) {
+    const ext = blob.type.includes('mp4') ? 'm4a' : blob.type.includes('webm') ? 'webm' : 'ogg';
+    const fd = new FormData();
+    fd.append('file', new File([blob], 'a.' + ext, { type: blob.type }));
+    fd.append('model', 'whisper-large-v3-turbo');
+    fd.append('language', 'en');
+    fd.append('temperature', '0');
+    const r = await api('/audio/transcriptions', { method: 'POST', headers: { Authorization: 'Bearer ' + cfg.key }, body: fd });
+    return ((await r.json()).text || '').trim();
+  }
+
+  async function stream(model, system, q, onText, signal) {
+    const r = await api('/chat/completions', { method: 'POST', headers: hdr(), signal,
+      body: JSON.stringify({ model, stream: true, temperature: 0.4, max_tokens: 260,
+        messages: [{ role: 'system', content: system }, { role: 'user', content: q }] }) });
+    const rd = r.body.getReader(), dec = new TextDecoder(); let buf = '', full = '';
+    for (;;) {
+      const { done, value } = await rd.read(); if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let i; while ((i = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, i).trim(); buf = buf.slice(i + 1);
+        if (!line.startsWith('data:')) continue;
+        const d = line.slice(5).trim(); if (d === '[DONE]') continue;
+        try { const t = JSON.parse(d).choices?.[0]?.delta?.content; if (t) { full += t; onText(full); } } catch {}
+      }
+    }
+    return full;
+  }
+
+  async function webAnswer(q, signal) {   // non-streaming: search tools run server-side
+    const r = await api('/chat/completions', { method: 'POST', headers: hdr(), signal,
+      body: JSON.stringify({ model: cfg.web, temperature: 0.3, max_tokens: 400,
+        messages: [{ role: 'system', content: WEB_SYS() }, { role: 'user', content: q }] }) });
+    return ((await r.json()).choices?.[0]?.message?.content || '').trim();
+  }
+
+  /* ---------- answer pipeline (latest question wins) ---------- */
+  let job = 0, ctrl = null;
+  async function answer(q) {
+    const id = ++job; ctrl?.abort(); ctrl = new AbortController();
+    const sig = ctrl.signal;
+    $('empty')?.remove(); feed.innerHTML = '';
+    const qEl = Object.assign(document.createElement('div'), { className: 'q', textContent: '“' + q + '”' });
+    const fast = block('Quick · from your resume', ''), web = block('Web-checked', 'web');
+    web.style.display = 'none';
+    feed.append(qEl, fast.el, web.el);
+
+    // both start at the same time; the fast one streams immediately
+    const pWeb = webAnswer(q, sig).then(t => { if (id === job && t && t !== '—') { web.set(t); web.el.style.display = ''; } }).catch(() => {});
+    try {
+      await stream(cfg.fast, FAST_SYS(), q, t => { if (id === job) fast.set(t); }, sig);
+    } catch (e) { if (e.name !== 'AbortError') fast.set('⚠ ' + e.message); }
+    await pWeb;
+  }
+  function block(tag, cls) {
+    const el = document.createElement('div'); el.className = 'block ' + cls;
+    el.innerHTML = `<span class="tag">${tag}</span><span class="t">…</span>`;
+    return { el, set: t => { el.querySelector('.t').innerHTML = fmt(t); } };
+  }
+
+  /* ---------- listening (continuous, hands-free) ---------- */
+  let listening = false, stream_ = null, actx = null, analyser = null, rec = null, chunks = [];
+  let heard = false, lastVoice = 0, segStart = 0, floor = 0.01, raf = 0, wake = null;
+  const buf = new Uint8Array(1024);
+
+  const pickMime = () => ['audio/mp4', 'audio/webm;codecs=opus', 'audio/webm'].find(m => window.MediaRecorder && MediaRecorder.isTypeSupported(m)) || '';
+
+  async function openAudio() {
+    try { stream_?.getTracks().forEach(t => t.stop()); } catch {}
+    try { await actx?.close(); } catch {}
+    stream_ = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: true } });
+    actx = new (window.AudioContext || window.webkitAudioContext)(); await actx.resume();
+    const src = actx.createMediaStreamSource(stream_);
+    analyser = actx.createAnalyser(); analyser.fftSize = 1024; src.connect(analyser);
+  }
+
+  let watchdog = 0, recovering = false;
+  async function start() {
+    if (!cfg.key) { $('gear').click(); return; }
+    try { await openAudio(); }
+    catch { setState('Mic blocked — allow it in Settings › Safari › Microphone', 'err'); return; }
+    try { wake = await navigator.wakeLock?.request('screen'); } catch {}
+    listening = true; goBtn.textContent = 'Stop'; goBtn.classList.add('on');
+    segment();
+    watchdog = setInterval(check, 2000);
+  }
+
+  // Keeps it always listening: recovers from phone calls, Siri, mic interruptions and suspended audio.
+  async function check() {
+    if (!listening || recovering) return;
+    const dead = !stream_ || stream_.getTracks().some(t => t.readyState !== 'live') || !actx || actx.state === 'closed';
+    if (!dead && actx.state !== 'running') { try { await actx.resume(); } catch {} return; }
+    if (dead) {
+      recovering = true; cancelAnimationFrame(raf);
+      try { if (rec && rec.state !== 'inactive') { rec.onstop = null; rec.stop(); } } catch {}
+      try { await openAudio(); segment(); }
+      catch { setState('Mic lost — tap Start listening', 'err'); stop(); }
+      recovering = false;
+    }
+  }
+
+  function stop() {
+    listening = false; cancelAnimationFrame(raf); clearInterval(watchdog);
+    try { rec?.state !== 'inactive' && rec.stop(); } catch {}
+    stream_?.getTracks().forEach(t => t.stop()); try { actx?.close(); } catch {}
+    try { wake?.release(); } catch {}
+    goBtn.textContent = 'Start listening'; goBtn.classList.remove('on'); setState('Idle');
+  }
+
+  function segment() {
+    if (!listening) return;
+    chunks = []; heard = false; segStart = lastVoice = Date.now();
+    const mime = pickMime();
+    rec = new MediaRecorder(stream_, { ...(mime ? { mimeType: mime } : {}), audioBitsPerSecond: 32000 });
+    rec.ondataavailable = e => e.data.size && chunks.push(e.data);
+    const mySpeech = () => heard;
+    rec.onstop = () => {
+      const blob = new Blob(chunks, { type: rec.mimeType || mime || 'audio/mp4' });
+      const had = mySpeech();
+      if (listening) segment();                       // keep listening immediately; processing runs in background
+      if (had && blob.size > 3000) handle(blob);
+    };
+    rec.start(200);
+    setState('Listening…', 'live');
+    loop();
+  }
+
+  function loop() {
+    analyser.getByteTimeDomainData(buf);
+    let s = 0; for (const v of buf) { const d = (v - 128) / 128; s += d * d; }
+    const rms = Math.sqrt(s / buf.length), now = Date.now();
+    const thr = Math.max(0.012, floor * 2.8);
+    if (rms > thr) { if (!heard) setState('Hearing question…', 'live'); heard = true; lastVoice = now; }
+    else floor = floor * 0.97 + rms * 0.03;            // track background noise while quiet
+    const quiet = now - lastVoice, len = now - segStart;
+    if ((heard && quiet > 1000 && len > 1500) || (!heard && len > 15000) || len > 40000) {
+      if (rec.state === 'recording') { rec.stop(); return; }
+    }
+    raf = requestAnimationFrame(loop);
+  }
+
+  async function handle(blob) {
+    setState('Transcribing…', 'live');
+    try {
+      const text = await transcribe(blob);
+      if (text.split(/\s+/).filter(Boolean).length < 3) { setState('Listening…', 'live'); return; }  // ignore noise / whisper filler
+      setState('Answering…', 'live');
+      await answer(text);
+      if (listening) setState('Listening…', 'live');
+    } catch (e) { setState(e.message, 'err'); }
+  }
+
+  goBtn.onclick = () => listening ? stop() : start();
+  document.addEventListener('visibilitychange', async () => {   // re-acquire screen lock when returning to the app
+    if (listening && !document.hidden) { try { wake = await navigator.wakeLock?.request('screen'); } catch {} check(); }
+  });
+  if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
+})();
+</script>
+</body>
+</html>
