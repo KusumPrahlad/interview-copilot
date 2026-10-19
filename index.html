@@ -154,7 +154,7 @@ Use web search when the question involves facts, current tech/tools/trends, or t
     $('empty')?.remove(); feed.innerHTML = '';
     const qEl = Object.assign(document.createElement('div'), { className: 'q', textContent: '“' + q + '”' });
     const fast = block('Quick · from your resume', ''), web = block('Web-checked', 'web');
-    web.style.display = 'none';
+    web.el.style.display = 'none';
     feed.append(qEl, fast.el, web.el);
 
     // both start at the same time; the fast one streams immediately

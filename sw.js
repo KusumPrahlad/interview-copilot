@@ -1,5 +1,5 @@
 // Caches the app shell so it opens instantly and offline. API calls always go to the network.
-const CACHE = 'copilot-v3';
+const CACHE = 'copilot-v4';
 const SHELL = ['./', './index.html', './manifest.json', './icon-180.png', './icon-192.png', './icon-512.png'];
 
 self.addEventListener('install', e => {
